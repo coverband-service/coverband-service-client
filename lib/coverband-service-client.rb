@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "coverband/service/client/version"
+require 'coverband/service/client/version'
 require 'securerandom'
 
 module Coverband
@@ -98,4 +98,14 @@ module Coverband
       class Error < StandardError; end
     end
   end
+end
+
+Coverband.configure do |config|
+  # toggle store type
+  redis_url = ENV['REDIS_URL']
+  # Normal Coverband Setup
+  # config.store = Coverband::Adapters::HashRedisStore.new(Redis.new(url: redis_url))
+  # Use The Test Service Adapter
+  coverband_service_url = ENV['COVERBAND_URL'] || 'http://127.0.0.1:3456'
+  config.store = Coverband::Adapters::Service.new(coverband_service_url)
 end
