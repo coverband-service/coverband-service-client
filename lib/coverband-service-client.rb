@@ -3,6 +3,11 @@
 require 'coverband/service/client/version'
 require 'securerandom'
 
+COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
+COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] ||
+  ((COVERBAND_ENV == 'development') ? 'http://127.0.0.1:3456' : 'https://coverband-service.herokuapp.com')
+# TODO: This id is still hard coded
+COVERBAND_ID = ENV['COVERBAND_ID'] || 'coverband-service/coverband_service_demo'
 module Coverband
     module Adapters
       ###
@@ -19,8 +24,8 @@ module Coverband
           super()
           @coverband_url = coverband_url
           @process_type = opts.fetch(:process_type) { 'unknown' }
-          @runtime_env = opts.fetch(:runtime_env) { Rails.env }
-          @coverband_id = opts.fetch(:coverband_id) { 'coverband-service/coverband_service_demo' }
+          @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
+          @coverband_id = opts.fetch(:coverband_id) { COVERBAND_ID }
         end
 
         def clear!
@@ -53,6 +58,7 @@ module Coverband
         end
 
         def save_report(report)
+          #puts caller.join(',')
           return if report.empty?
 
           # TODO: do we need dup
@@ -74,7 +80,7 @@ module Coverband
         end
 
         def raw_store
-          raise 'not supported'
+          self
         end
 
         private
@@ -100,12 +106,69 @@ module Coverband
   end
 end
 
+###
+# TODO: move to a subclass, but the railtie needs to allow setting
+# so for now just overiding the class to report via net::http
+###
+module Coverband
+  module Collectors
+    class ViewTracker
+      def report_views_tracked
+        reported_time = Time.now.to_i
+        if views_to_record.any?
+          relative_views = views_to_record.map! do |view|
+            roots.each do |root|
+              view = view.gsub(/#{root}/, '')
+            end
+            view
+          end
+          save_tracked_views(views: relative_views, reported_time: reported_time)
+        end
+        self.views_to_record = []
+      rescue StandardError => e
+        # we don't want to raise errors if Coverband can't reach redis.
+        # This is a nice to have not a bring the system down
+        logger&.error "Coverband: view_tracker failed to store, error #{e.class.name}"
+      end
+
+      private
+
+      def save_tracked_views(views:, reported_time:)
+        uri = URI("#{COVERBAND_SERVICE_URL}/api/collector")
+        req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
+        data = {
+          coverband_id: COVERBAND_ID,
+          collection_type: 'view_tracker_delta',
+          collection_data: {
+            tags: {
+              runtime_env: COVERBAND_ENV
+            },
+            collection_time: reported_time,
+            tracked_views: views
+          }
+        }
+        puts "sending #{data}"
+        req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
+        res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
+          http.request(req)
+        end
+      rescue StandardError => e
+        puts "Coverband: Error while saving coverage #{e}"
+      end
+    end
+  end
+end
+
 Coverband.configure do |config|
   # toggle store type
-  redis_url = ENV['REDIS_URL']
+
+  # redis_url = ENV['REDIS_URL']
   # Normal Coverband Setup
   # config.store = Coverband::Adapters::HashRedisStore.new(Redis.new(url: redis_url))
+
   # Use The Test Service Adapter
-  coverband_service_url = ENV['COVERBAND_URL'] || 'http://127.0.0.1:3456'
-  config.store = Coverband::Adapters::Service.new(coverband_service_url)
+  config.store = Coverband::Adapters::Service.new(COVERBAND_SERVICE_URL)
+
+  # default to tracking views true
+  config.track_views = ENV['COVERBAND_DISABLE_VIEW_TRACKER'] ? false : true
 end
