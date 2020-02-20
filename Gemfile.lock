@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    coverband-service-client (0.0.3)
+    coverband-service-client (0.0.4)
       coverband (~> 4.2.4)
 
 GEM
