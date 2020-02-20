@@ -7,8 +7,16 @@ COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.
 COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] ||
   ((COVERBAND_ENV == 'development') ? 'http://127.0.0.1:3456' : 'https://coverband-service.herokuapp.com')
 # TODO: This id is still hard coded
-COVERBAND_ID = ENV['COVERBAND_ID'] || 'coverband-service/coverband_service_demo'
+COVERBAND_ID = ENV['COVERBAND_ID'] || 'error/set_COVERBAND_ID'
+
 module Coverband
+
+  if COVERBAND_ENV == 'test' && !ENV['COVERBAND_ENABLE_TEST_MODE']
+    def self.report_coverage
+      # for now disable coverband reporting in test env by default
+    end
+  end
+
     module Adapters
       ###
       # Take Coverband data and store a merged coverage set to the Coverband service
@@ -170,5 +178,9 @@ Coverband.configure do |config|
   config.store = Coverband::Adapters::Service.new(COVERBAND_SERVICE_URL)
 
   # default to tracking views true
-  config.track_views = ENV['COVERBAND_DISABLE_VIEW_TRACKER'] ? false : true
+  config.track_views = ENV['COVERBAND_ENABLE_VIEW_TRACKER'] ? true : false
+
+  if COVERBAND_ENV == 'test'
+    config.background_reporting_enabled = false
+  end
 end
