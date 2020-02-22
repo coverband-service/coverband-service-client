@@ -6,8 +6,6 @@ require 'securerandom'
 COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
 COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] ||
   ((COVERBAND_ENV == 'development') ? 'http://127.0.0.1:3456' : 'https://coverband-service.herokuapp.com')
-# TODO: This id is still hard coded
-COVERBAND_ID = ENV['COVERBAND_ID'] || 'error/set_COVERBAND_ID'
 
 module Coverband
 
@@ -26,14 +24,13 @@ module Coverband
       # * currently JSON, but likely better to move to something simpler / faster
       ###
       class Service < Base
-        attr_reader :coverband_url, :process_type, :runtime_env, :coverband_id
+        attr_reader :coverband_url, :process_type, :runtime_env
 
         def initialize(coverband_url, opts = {})
           super()
           @coverband_url = coverband_url
           @process_type = opts.fetch(:process_type) { 'unknown' }
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
-          @coverband_id = opts.fetch(:coverband_id) { COVERBAND_ID }
         end
 
         def clear!
@@ -52,7 +49,7 @@ module Coverband
         # TODO: no longer get by type just get both reports in a single request
         def coverage(local_type = nil, opts = {})
           local_type ||= opts.key?(:override_type) ? opts[:override_type] : type
-          uri = URI("#{coverband_url}/api/coverage/#{coverband_id}?type=#{local_type}")
+          uri = URI("#{coverband_url}/api/coverage/#{ENV['COVERBAND_ID']}?type=#{local_type}")
           req = Net::HTTP::Get.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
           res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
             http.request(req)
@@ -73,7 +70,6 @@ module Coverband
           # TODO: remove timestamps, server will track first_seen
           data = expand_report(report.dup)
           full_package = {
-            coverband_id: coverband_id,
             collection_type: 'coverage_delta',
             collection_data: {
               tags: {
@@ -145,7 +141,6 @@ module Coverband
         uri = URI("#{COVERBAND_SERVICE_URL}/api/collector")
         req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
         data = {
-          coverband_id: COVERBAND_ID,
           collection_type: 'view_tracker_delta',
           collection_data: {
             tags: {
