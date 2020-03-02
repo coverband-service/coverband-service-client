@@ -6,6 +6,7 @@ require 'securerandom'
 COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
 COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] ||
   ((COVERBAND_ENV == 'development') ? 'http://127.0.0.1:3456' : 'https://coverband-service.herokuapp.com')
+COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 1
 
 module Coverband
 
@@ -68,19 +69,21 @@ module Coverband
 
           # TODO: do we need dup
           # TODO: remove timestamps, server will track first_seen
-          data = expand_report(report.dup)
-          full_package = {
-            collection_type: 'coverage_delta',
-            collection_data: {
-              tags: {
-                process_type: process_type,
-                app_loading: type == Coverband::EAGER_TYPE,
-                runtime_env: runtime_env
-              },
-              file_coverage: data
+          Thread.new do
+            data = expand_report(report.dup)
+            full_package = {
+              collection_type: 'coverage_delta',
+              collection_data: {
+                tags: {
+                  process_type: process_type,
+                  app_loading: type == Coverband::EAGER_TYPE,
+                  runtime_env: runtime_env
+                },
+                file_coverage: data
+              }
             }
-          }
-          save_coverage(full_package)
+            save_coverage(full_package)
+          end&.join
         end
 
         def raw_store
@@ -91,10 +94,19 @@ module Coverband
 
         def save_coverage(data)
           uri = URI("#{coverband_url}/api/collector")
-          req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
-          puts "sending #{data}"
+          req = Net::HTTP::Post.new(uri,
+                                    'Content-Type' => 'application/json',
+                                    'Coverband-Token' => ENV['COVERBAND_API_KEY'])
+          # puts "sending #{data}"
           req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
-          res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
+          res = Net::HTTP.start(
+            uri.hostname,
+            uri.port,
+            open_timeout: COVERBAND_TIMEOUT,
+            read_timeout: COVERBAND_TIMEOUT,
+            ssl_timeout: COVERBAND_TIMEOUT,
+            use_ssl: uri.scheme == 'https'
+            ) do |http|
             http.request(req)
           end
         rescue StandardError => e
@@ -150,7 +162,7 @@ module Coverband
             tracked_views: views
           }
         }
-        puts "sending #{data}"
+        # puts "sending #{data}"
         req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
         res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
           http.request(req)
@@ -163,17 +175,16 @@ module Coverband
 end
 
 Coverband.configure do |config|
-  # toggle store type
-
-  # redis_url = ENV['REDIS_URL']
-  # Normal Coverband Setup
-  # config.store = Coverband::Adapters::HashRedisStore.new(Redis.new(url: redis_url))
-
   # Use The Test Service Adapter
   config.store = Coverband::Adapters::Service.new(COVERBAND_SERVICE_URL)
 
   # default to tracking views true
   config.track_views = ENV['COVERBAND_ENABLE_VIEW_TRACKER'] ? true : false
+
+  # report every 10m by default
+  config.background_reporting_sleep_seconds = COVERBAND_ENV == 'production' ? 600 : 60
+  # add a wiggle to avoid service stampede
+  config.reporting_wiggle = COVERBAND_ENV == 'production' ? 90 : 6
 
   if COVERBAND_ENV == 'test'
     config.background_reporting_enabled = false
