@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'coverband'
 require 'coverband/service/client/version'
 require 'securerandom'
 
