@@ -5,13 +5,18 @@ require 'coverband/service/client/version'
 require 'securerandom'
 
 COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
-COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] ||
-  ((COVERBAND_ENV == 'development') ? 'http://127.0.0.1:3456' : 'https://coverband-service.herokuapp.com')
+COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] || 'https://coverband.io'
 COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 1
+COVERBAND_ENABLE_DEV_MODE = ENV['COVERBAND_ENABLE_DEV_MODE'] || false
+COVERBAND_ENABLE_TEST_MODE = ENV['COVERBAND_ENABLE_TEST_MODE'] || false
+COVERBAND_PROCESS_TYPE = ENV['PROCESS_TYPE'] || 'unknown'
+COVERBAND_REPORT_PERIOD = (ENV['COVERBAND_REPORT_PERIOD'] || 600).to_i
 
 module Coverband
 
-  if COVERBAND_ENV == 'test' && !ENV['COVERBAND_ENABLE_TEST_MODE']
+  if ((COVERBAND_ENV == 'test' && !COVERBAND_ENABLE_TEST_MODE) ||
+       COVERBAND_ENV == 'development' && !COVERBAND_ENABLE_DEV_MODE
+     )
     def self.report_coverage
       # for now disable coverband reporting in test env by default
     end
@@ -31,7 +36,7 @@ module Coverband
         def initialize(coverband_url, opts = {})
           super()
           @coverband_url = coverband_url
-          @process_type = opts.fetch(:process_type) { 'unknown' }
+          @process_type = opts.fetch(:process_type) { COVERBAND_PROCESS_TYPE }
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
         end
 
@@ -180,10 +185,10 @@ Coverband.configure do |config|
   config.store = Coverband::Adapters::Service.new(COVERBAND_SERVICE_URL)
 
   # default to tracking views true
-  config.track_views = ENV['COVERBAND_ENABLE_VIEW_TRACKER'] ? true : false
+  config.track_views = ENV['COVERBAND_DISABLE_VIEW_TRACKER'] ? false : true
 
   # report every 10m by default
-  config.background_reporting_sleep_seconds = COVERBAND_ENV == 'production' ? 600 : 60
+  config.background_reporting_sleep_seconds = COVERBAND_ENV == 'production' ? COVERBAND_REPORT_PERIOD : 60
   # add a wiggle to avoid service stampede
   config.reporting_wiggle = COVERBAND_ENV == 'production' ? 90 : 6
 
