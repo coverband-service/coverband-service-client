@@ -4,21 +4,26 @@ require 'coverband'
 require 'coverband/service/client/version'
 require 'securerandom'
 
-COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
-COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] || 'https://coverband.io'
-COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 1
-COVERBAND_ENABLE_DEV_MODE = ENV['COVERBAND_ENABLE_DEV_MODE'] || false
-COVERBAND_ENABLE_TEST_MODE = ENV['COVERBAND_ENABLE_TEST_MODE'] || false
-COVERBAND_PROCESS_TYPE = ENV['PROCESS_TYPE'] || 'unknown'
-COVERBAND_REPORT_PERIOD = (ENV['COVERBAND_REPORT_PERIOD'] || 600).to_i
-
 module Coverband
+  COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
+  COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] || 'https://coverband.io'
+  COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 1
+  COVERBAND_ENABLE_DEV_MODE = ENV['COVERBAND_ENABLE_DEV_MODE'] || false
+  COVERBAND_ENABLE_TEST_MODE = ENV['COVERBAND_ENABLE_TEST_MODE'] || false
+  COVERBAND_PROCESS_TYPE = ENV['PROCESS_TYPE'] || 'unknown'
+  COVERBAND_REPORT_PERIOD = (ENV['COVERBAND_REPORT_PERIOD'] || 600).to_i
 
-  if ((COVERBAND_ENV == 'test' && !COVERBAND_ENABLE_TEST_MODE) ||
-       COVERBAND_ENV == 'development' && !COVERBAND_ENABLE_DEV_MODE
-     )
+  def self.service_disabled_dev_test_env?
+    (COVERBAND_ENV == 'test' && !COVERBAND_ENABLE_TEST_MODE) ||
+      (COVERBAND_ENV == 'development' && !COVERBAND_ENABLE_DEV_MODE)
+  end
+
+  if service_disabled_dev_test_env?
     def self.report_coverage
-      # for now disable coverband reporting in test env by default
+      # for now disable coverband reporting in test & dev env by default
+      if Coverband.configuration.verbose
+        puts "Coverband: disabled for #{COVERBAND_ENV}, set COVERBAND_ENABLE_DEV_MODE or COVERBAND_ENABLE_TEST_MODE to enable"
+      end
     end
   end
 
@@ -40,6 +45,10 @@ module Coverband
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
         end
 
+        def logger
+          Coverband.configuration.logger
+        end
+
         def clear!
           # TBD
         end
@@ -53,11 +62,15 @@ module Coverband
           0
         end
 
+        def api_key
+          ENV['COVERBAND_API_KEY'] || Coverband.configuration.api_key
+        end
+
         # TODO: no longer get by type just get both reports in a single request
         def coverage(local_type = nil, opts = {})
           local_type ||= opts.key?(:override_type) ? opts[:override_type] : type
           uri = URI("#{coverband_url}/api/coverage/#{ENV['COVERBAND_ID']}?type=#{local_type}")
-          req = Net::HTTP::Get.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
+          req = Net::HTTP::Get.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => api_key)
           res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
             http.request(req)
           end
@@ -70,7 +83,6 @@ module Coverband
         end
 
         def save_report(report)
-          #puts caller.join(',')
           return if report.empty?
 
           # TODO: do we need dup
@@ -99,12 +111,18 @@ module Coverband
         private
 
         def save_coverage(data)
+          if api_key.nil?
+            puts "Coverband: Error: no Coverband API key was found!"
+          end
+
           uri = URI("#{coverband_url}/api/collector")
+          logger&.info "Coverband: saving #{uri}" if Coverband.configuration.verbose
           req = Net::HTTP::Post.new(uri,
                                     'Content-Type' => 'application/json',
-                                    'Coverband-Token' => ENV['COVERBAND_API_KEY'])
-          # puts "sending #{data}"
+                                    'Coverband-Token' => api_key)
           req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
+
+          logger&.info "Coverband: saving #{req.body}" if Coverband.configuration.verbose
           res = Net::HTTP.start(
             uri.hostname,
             uri.port,
@@ -155,6 +173,10 @@ module Coverband
 
       private
 
+      def logger
+        Coverband.configuration.logger
+      end
+
       def save_tracked_views(views:, reported_time:)
         uri = URI("#{COVERBAND_SERVICE_URL}/api/collector")
         req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
@@ -180,19 +202,39 @@ module Coverband
   end
 end
 
+module Coverband
+  class Configuration
+    attr_accessor :api_key
+  end
+end
+
 Coverband.configure do |config|
   # Use The Test Service Adapter
-  config.store = Coverband::Adapters::Service.new(COVERBAND_SERVICE_URL)
+  config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
 
   # default to tracking views true
-  config.track_views = ENV['COVERBAND_DISABLE_VIEW_TRACKER'] ? false : true
+  config.track_views = if ENV['COVERBAND_DISABLE_VIEW_TRACKER']
+      false
+    elsif Coverband.service_disabled_dev_test_env?
+      false
+    else
+      true
+    end
 
   # report every 10m by default
-  config.background_reporting_sleep_seconds = COVERBAND_ENV == 'production' ? COVERBAND_REPORT_PERIOD : 60
+  config.background_reporting_sleep_seconds = Coverband::COVERBAND_ENV == 'production' ? Coverband::COVERBAND_REPORT_PERIOD : 60
   # add a wiggle to avoid service stampede
-  config.reporting_wiggle = COVERBAND_ENV == 'production' ? 90 : 6
+  config.reporting_wiggle = Coverband::COVERBAND_ENV == 'production' ? 90 : 6
 
-  if COVERBAND_ENV == 'test'
+  if Coverband::COVERBAND_ENV == 'test'
     config.background_reporting_enabled = false
   end
 end
+
+# NOTE: it is really hard to bypass / overload our config we should fix this in Coverband
+# this hopefully detects anyone that has both gems and was trying to configure Coverband themselves.
+if File.exist?('./config/coverband.rb')
+  puts "Warning: config/coverband.rb found, this overrides coverband service allowing one to setup open source Coverband"
+end
+
+Coverband.configure('./config/coverband_service.rb') if File.exist?('./config/coverband_service.rb')
