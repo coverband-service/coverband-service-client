@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+COVERBAND_ORIGINAL_START = ENV['COVERBAND_DISABLE_AUTO_START']
+ENV['COVERBAND_DISABLE_AUTO_START'] = 'true'
 require 'coverband'
 require 'coverband/service/client/version'
 require 'securerandom'
@@ -22,7 +24,7 @@ module Coverband
     def self.report_coverage
       # for now disable coverband reporting in test & dev env by default
       if Coverband.configuration.verbose
-        puts "Coverband: disabled for #{COVERBAND_ENV}, set COVERBAND_ENABLE_DEV_MODE or COVERBAND_ENABLE_TEST_MODE to enable"
+        puts "Coverband: disabled for #{COVERBAND_ENV}, set COVERBAND_ENABLE_DEV_MODE or COVERBAND_ENABLE_TEST_MODE to enable" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
       end
     end
   end
@@ -116,13 +118,12 @@ module Coverband
           end
 
           uri = URI("#{coverband_url}/api/collector")
-          logger&.info "Coverband: saving #{uri}" if Coverband.configuration.verbose
           req = Net::HTTP::Post.new(uri,
                                     'Content-Type' => 'application/json',
                                     'Coverband-Token' => api_key)
           req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
 
-          logger&.info "Coverband: saving #{req.body}" if Coverband.configuration.verbose
+          logger&.info "Coverband: saving (#{uri}) #{req.body}" if Coverband.configuration.verbose
           res = Net::HTTP.start(
             uri.hostname,
             uri.port,
@@ -134,7 +135,7 @@ module Coverband
             http.request(req)
           end
         rescue StandardError => e
-          puts "Coverband: Error while saving coverage #{e}"
+          logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
         end
       end
     end
@@ -168,7 +169,7 @@ module Coverband
       rescue StandardError => e
         # we don't want to raise errors if Coverband can't reach redis.
         # This is a nice to have not a bring the system down
-        logger&.error "Coverband: view_tracker failed to store, error #{e.class.name}"
+        logger&.error "Coverband: view_tracker failed to store, error #{e.class.name}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
       end
 
       private
@@ -196,7 +197,7 @@ module Coverband
           http.request(req)
         end
       rescue StandardError => e
-        puts "Coverband: Error while saving coverage #{e}"
+        logger&.error "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
       end
     end
   end
@@ -208,6 +209,7 @@ module Coverband
   end
 end
 
+ENV['COVERBAND_DISABLE_AUTO_START'] = COVERBAND_ORIGINAL_START
 Coverband.configure do |config|
   # Use The Test Service Adapter
   config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
@@ -234,7 +236,10 @@ end
 # NOTE: it is really hard to bypass / overload our config we should fix this in Coverband
 # this hopefully detects anyone that has both gems and was trying to configure Coverband themselves.
 if File.exist?('./config/coverband.rb')
-  puts "Warning: config/coverband.rb found, this overrides coverband service allowing one to setup open source Coverband"
+  puts "Warning: config/coverband.rb found, this overrides coverband service allowing one to setup open source Coverband" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
 end
 
 Coverband.configure('./config/coverband_service.rb') if File.exist?('./config/coverband_service.rb')
+Coverband.start
+require "coverband/utils/railtie" if defined? ::Rails::Railtie
+require "coverband/integrations/resque" if defined? ::Resque
