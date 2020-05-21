@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 COVERBAND_ORIGINAL_START = ENV['COVERBAND_DISABLE_AUTO_START']
-ENV['COVERBAND_DISABLE_AUTO_START'] = true
+ENV['COVERBAND_DISABLE_AUTO_START'] = 'true'
 require 'coverband'
 require 'coverband/service/client/version'
 require 'securerandom'
@@ -118,13 +118,12 @@ module Coverband
           end
 
           uri = URI("#{coverband_url}/api/collector")
-          logger&.info "Coverband: saving #{uri}" if Coverband.configuration.verbose
           req = Net::HTTP::Post.new(uri,
                                     'Content-Type' => 'application/json',
                                     'Coverband-Token' => api_key)
           req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
 
-          logger&.info "Coverband: saving #{req.body}" logger&.info
+          logger&.info "Coverband: saving (#{uri}) #{req.body}" if Coverband.configuration.verbose
           res = Net::HTTP.start(
             uri.hostname,
             uri.port,
@@ -242,3 +241,5 @@ end
 
 Coverband.configure('./config/coverband_service.rb') if File.exist?('./config/coverband_service.rb')
 Coverband.start
+require "coverband/utils/railtie" if defined? ::Rails::Railtie
+require "coverband/integrations/resque" if defined? ::Resque
