@@ -68,20 +68,18 @@ module Coverband
           ENV['COVERBAND_API_KEY'] || Coverband.configuration.api_key
         end
 
-        # TODO: no longer get by type just get both reports in a single request
         def coverage(local_type = nil, opts = {})
           local_type ||= opts.key?(:override_type) ? opts[:override_type] : type
-          uri = URI("#{coverband_url}/api/coverage/#{ENV['COVERBAND_ID']}?type=#{local_type}")
+          env_filter = opts.key?(:env_filter) ? opts[:env_filter] : 'production'
+          uri = URI("#{coverband_url}/api/coverage?type=#{local_type}&env_filter=#{env_filter}",)
           req = Net::HTTP::Get.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => api_key)
           res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
             http.request(req)
           end
           coverage_data = JSON.parse(res.body)
-          # puts "coverage data: "
-          # puts coverage_data
           coverage_data
         rescue StandardError => e
-          puts "Coverband: Error while retrieving coverage #{e}"
+          logger&.error "Coverband: Error while retrieving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
         end
 
         def save_report(report)
@@ -174,13 +172,17 @@ module Coverband
 
       private
 
+      def api_key
+        ENV['COVERBAND_API_KEY'] || Coverband.configuration.api_key
+      end
+
       def logger
         Coverband.configuration.logger
       end
 
       def save_tracked_views(views:, reported_time:)
         uri = URI("#{COVERBAND_SERVICE_URL}/api/collector")
-        req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => ENV['COVERBAND_API_KEY'])
+        req = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json', 'Coverband-Token' => api_key)
         data = {
           collection_type: 'view_tracker_delta',
           collection_data: {
