@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+require 'socket'
 
 COVERBAND_ORIGINAL_START = ENV['COVERBAND_DISABLE_AUTO_START']
 ENV['COVERBAND_DISABLE_AUTO_START'] = 'true'
@@ -38,12 +39,13 @@ module Coverband
       # * currently JSON, but likely better to move to something simpler / faster
       ###
       class Service < Base
-        attr_reader :coverband_url, :process_type, :runtime_env
+        attr_reader :coverband_url, :process_type, :runtime_env, :hostname, :pid
 
         def initialize(coverband_url, opts = {})
           super()
           @coverband_url = coverband_url
-          @process_type = opts.fetch(:process_type) { COVERBAND_PROCESS_TYPE }
+          @process_type = opts.fetch(:process_type) { $PROGRAM_NAME&.split('/')&.last || COVERBAND_PROCESS_TYPE }
+          @hostname = opts.fetch(:hostname) { ENV["DYNO"] || Socket.gethostname.force_encoding('utf-8').encode }
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
         end
 
@@ -68,6 +70,9 @@ module Coverband
           ENV['COVERBAND_API_KEY'] || Coverband.configuration.api_key
         end
 
+        ###
+        # Fetch coverband coverage via the API
+        ###
         def coverage(local_type = nil, opts = {})
           local_type ||= opts.key?(:override_type) ? opts[:override_type] : type
           env_filter = opts.key?(:env_filter) ? opts[:env_filter] : 'production'
@@ -85,8 +90,11 @@ module Coverband
         def save_report(report)
           return if report.empty?
 
+          # We set here vs initialize to avoid setting on the primary process vs child processes
+          @pid ||= ::Process.pid
+
           # TODO: do we need dup
-          # TODO: remove timestamps, server will track first_seen
+          # TODO: remove upstream timestamps, server will track first_seen
           Thread.new do
             data = expand_report(report.dup)
             full_package = {
@@ -95,7 +103,9 @@ module Coverband
                 tags: {
                   process_type: process_type,
                   app_loading: type == Coverband::EAGER_TYPE,
-                  runtime_env: runtime_env
+                  runtime_env: runtime_env,
+                  pid: pid,
+                  hostname: hostname,
                 },
                 file_coverage: data
               }
@@ -113,6 +123,7 @@ module Coverband
         def save_coverage(data)
           if api_key.nil?
             puts "Coverband: Error: no Coverband API key was found!"
+            return
           end
 
           uri = URI("#{coverband_url}/api/collector")
