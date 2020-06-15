@@ -36,7 +36,7 @@ module Coverband
       #
       # NOTES:
       # * uses net/http to avoid any dependencies
-      # * currently JSON, but likely better to move to something simpler / faster
+      # * currently JSON, but likely better to move to something faster
       ###
       class Service < Base
         attr_reader :coverband_url, :process_type, :runtime_env, :hostname, :pid
@@ -147,6 +147,50 @@ module Coverband
           logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
         end
       end
+
+      class PersistentService < Service
+        attr_reader :http
+
+        def initialize(coverband_url, opts = {})
+          super
+          initiate_http
+        end
+
+        private
+
+        def initiate_http
+          @http = Net::HTTP::Persistent.new name: 'coverband_persistent'
+          @http.headers['Content-Type'] = 'application/json'
+          @http.headers['Coverband-Token'] = api_key
+          @http.open_timeout = COVERBAND_TIMEOUT
+          @http.read_timeout = COVERBAND_TIMEOUT
+          @http.ssl_timeout = COVERBAND_TIMEOUT
+        end
+
+        def save_coverage(data)
+          persistent_attempts = 0
+          begin
+            if api_key.nil?
+              puts "Coverband: Error: no Coverband API key was found!"
+              return
+            end
+
+            post_uri = URI("#{coverband_url}/api/collector")
+            post = Net::HTTP::Post.new post_uri.path
+            body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
+            post.body = body
+            logger&.info "Coverband: saving (#{post_uri}) #{body}" if Coverband.configuration.verbose
+            res = http.request post_uri, post
+          rescue Net::HTTP::Persistent::Error => e
+            persistent_attempts += 1
+            http.shutdown
+            initiate_http
+            retry if persistent_attempts < 2
+          end
+        rescue StandardError => e
+          logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
+        end
+      end
     end
 
   module Service
@@ -224,8 +268,12 @@ end
 
 ENV['COVERBAND_DISABLE_AUTO_START'] = COVERBAND_ORIGINAL_START
 Coverband.configure do |config|
-  # Use The Test Service Adapter
-  config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
+  # Use the Service Adapter
+  if defined?(Net::HTTP::Persistent)
+    config.store = Coverband::Adapters::PersistentService.new(Coverband::COVERBAND_SERVICE_URL)
+  else
+    config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
+  end
 
   # default to tracking views true
   config.track_views = if ENV['COVERBAND_DISABLE_VIEW_TRACKER']
