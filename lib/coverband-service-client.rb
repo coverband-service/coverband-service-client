@@ -46,6 +46,7 @@ module Coverband
           @coverband_url = coverband_url
           @process_type = opts.fetch(:process_type) { $PROGRAM_NAME&.split('/')&.last || COVERBAND_PROCESS_TYPE }
           @hostname = opts.fetch(:hostname) { ENV["DYNO"] || Socket.gethostname.force_encoding('utf-8').encode }
+          @hostname = @hostname.gsub("'",'').gsub("’",'')
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
           initialize_stats
         end
@@ -64,8 +65,8 @@ module Coverband
             'coverband.save.time',
             timing,
             host: hostname,
-            env: runtime_env,
-            client: "coverband_#{self.class.name.split("::").last}")
+            device: "coverband_#{self.class.name.split("::").last}",
+            options: {tags: [runtime_env]})
         end
 
         def logger
