@@ -10,7 +10,7 @@ require 'securerandom'
 module Coverband
   COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
   COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] || 'https://coverband.io'
-  COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 1
+  COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 2
   COVERBAND_ENABLE_DEV_MODE = ENV['COVERBAND_ENABLE_DEV_MODE'] || false
   COVERBAND_ENABLE_TEST_MODE = ENV['COVERBAND_ENABLE_TEST_MODE'] || false
   COVERBAND_PROCESS_TYPE = ENV['PROCESS_TYPE'] || 'unknown'
@@ -39,7 +39,7 @@ module Coverband
       # * currently JSON, but likely better to move to something faster
       ###
       class Service < Base
-        attr_reader :coverband_url, :process_type, :runtime_env, :hostname, :pid
+        attr_reader :coverband_url, :process_type, :runtime_env, :hostname, :pid, :stats
 
         def initialize(coverband_url, opts = {})
           super()
@@ -47,6 +47,25 @@ module Coverband
           @process_type = opts.fetch(:process_type) { $PROGRAM_NAME&.split('/')&.last || COVERBAND_PROCESS_TYPE }
           @hostname = opts.fetch(:hostname) { ENV["DYNO"] || Socket.gethostname.force_encoding('utf-8').encode }
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
+          initialize_stats
+        end
+
+        def initialize_stats
+          return unless ENV['COVERBAND_STATS_KEY']
+          return unless defined?(Dogapi::Client)
+
+          @stats = Dogapi::Client.new(ENV['COVERBAND_STATS_KEY'])
+        end
+
+        def report_timing(timing)
+          return unless @stats
+
+          @stats.emit_point(
+            'coverband.save.time',
+            timing,
+            host: hostname,
+            env: runtime_env,
+            client: "coverband_#{self.class.name.split("::").last}")
         end
 
         def logger
@@ -110,7 +129,11 @@ module Coverband
                 file_coverage: data
               }
             }
+
+            starting = Process.clock_gettime(Process::CLOCK_MONOTONIC)
             save_coverage(full_package)
+            ending = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            report_timing((ending - starting))
           end&.join
         end
 
@@ -149,7 +172,7 @@ module Coverband
       end
 
       class PersistentService < Service
-        attr_reader :http
+        attr_reader :http, :stats
 
         def initialize(coverband_url, opts = {})
           super
