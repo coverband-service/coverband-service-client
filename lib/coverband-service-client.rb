@@ -56,6 +56,7 @@ module Coverband
           return unless defined?(Dogapi::Client)
 
           @stats = Dogapi::Client.new(ENV['COVERBAND_STATS_KEY'])
+          @app_name = defined?(Rails) ? Rails.application.class.module_parent.to_s : "unknown"
         end
 
         def report_timing(timing)
