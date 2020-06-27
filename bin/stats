@@ -1,0 +1,42 @@
+#!/usr/bin/env ruby
+
+require "bundler/setup"
+
+ENV['COVERBAND_ENABLE_DEV_MODE'] = 'true'
+ENV['COVERBAND_ENABLE_TEST_MODE'] = 'true'
+ENV['PROCESS_TYPE'] = 'debug'
+ENV['COVERBAND_REPORT_PERIOD'] = '30'
+ENV['COVERBAND_API_KEY'] ||= 'set this'
+ENV['COVERBAND_STATS_KEY'] ||='set this'
+
+require "pry-byebug";
+require "dogapi";
+require "net/http/persistent";
+# require "httplog";
+require 'benchmark'
+
+require_relative "../lib/coverband-service-client"
+
+# HttpLog.configure do |config|
+#   config.url_SAFElist_pattern = /coverband/
+# end
+
+data = {
+  'app/helpers/posts_helper.rb' => [1, nil]
+}
+
+collector = Coverband::Collectors::Coverage.instance
+store = Coverband.configuration.store
+
+# What is the recommended timeout against the target, from the lib
+# puts store.recommended_timeout
+
+Benchmark.bmbm do |x|
+  x.report("connection") do
+    30.times do
+      store.save_report(data)
+    end
+  end
+end
+
+puts "done"

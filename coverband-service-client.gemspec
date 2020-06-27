@@ -28,6 +28,14 @@ Gem::Specification.new do |spec|
 
   spec.add_development_dependency "bundler", "~> 2.0"
   spec.add_development_dependency "rake", "~> 13.0"
+
+  # For benchmarking stats
+  # spec.add_development_dependency "pry-byebug"
+  # spec.add_development_dependency "dogapi"
+  # spec.add_development_dependency "httplog"
+  # # to benchmark persistent connections
+  # spec.add_development_dependency "net-http-persistent"
+
   spec.add_development_dependency "minitest", "~> 5.0"
   spec.add_runtime_dependency "coverband", "~> 4.2.4"
 end

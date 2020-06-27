@@ -15,6 +15,7 @@ module Coverband
   COVERBAND_ENABLE_TEST_MODE = ENV['COVERBAND_ENABLE_TEST_MODE'] || false
   COVERBAND_PROCESS_TYPE = ENV['PROCESS_TYPE'] || 'unknown'
   COVERBAND_REPORT_PERIOD = (ENV['COVERBAND_REPORT_PERIOD'] || 600).to_i
+  COVERBAND_PERSISTENT_HTTP = ENV['COVERBAND_PERSISTENT_HTTP'] || false
 
   def self.service_disabled_dev_test_env?
     (COVERBAND_ENV == 'test' && !COVERBAND_ENABLE_TEST_MODE) ||
@@ -132,10 +133,10 @@ module Coverband
               }
             }
 
-            starting = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            starting = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @stats
             save_coverage(full_package)
-            ending = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-            report_timing((ending - starting))
+            ending = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @stats
+            report_timing((ending - starting)) if @stats
           end&.join
         end
 
@@ -152,13 +153,13 @@ module Coverband
           end
 
           uri = URI("#{coverband_url}/api/collector")
-          req = Net::HTTP::Post.new(uri,
+          req = ::Net::HTTP::Post.new(uri,
                                     'Content-Type' => 'application/json',
                                     'Coverband-Token' => api_key)
           req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
 
           logger&.info "Coverband: saving (#{uri}) #{req.body}" if Coverband.configuration.verbose
-          res = Net::HTTP.start(
+          res = ::Net::HTTP.start(
             uri.hostname,
             uri.port,
             open_timeout: COVERBAND_TIMEOUT,
@@ -181,6 +182,10 @@ module Coverband
           initiate_http
         end
 
+        def recommended_timeout
+          puts Net::HTTP::Persistent.detect_idle_timeout URI("#{coverband_url}/api/collector")
+        end
+
         private
 
         def initiate_http
@@ -189,7 +194,13 @@ module Coverband
           @http.headers['Coverband-Token'] = api_key
           @http.open_timeout = COVERBAND_TIMEOUT
           @http.read_timeout = COVERBAND_TIMEOUT
-          @http.ssl_timeout = COVERBAND_TIMEOUT
+          # the two below seem inconsistent in terms of how they are set
+          # leaving off for now
+          # @http.ssl_timeout = COVERBAND_TIMEOUT
+          # @http.write_timeout = COVERBAND_TIMEOUT
+          # default is 5-10 seconds but we report ever few min, heroku kills them
+          # before our reporting period... ;(
+          # @http.idle_timeout = 1000
         end
 
         def save_coverage(data)
@@ -294,7 +305,7 @@ end
 ENV['COVERBAND_DISABLE_AUTO_START'] = COVERBAND_ORIGINAL_START
 Coverband.configure do |config|
   # Use the Service Adapter
-  if defined?(Net::HTTP::Persistent)
+  if COVERBAND_PERSISTENT_HTTP && defined?(Net::HTTP::Persistent)
     config.store = Coverband::Adapters::PersistentService.new(Coverband::COVERBAND_SERVICE_URL)
   else
     config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
