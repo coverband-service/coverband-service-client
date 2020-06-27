@@ -49,6 +49,7 @@ module Coverband
           @hostname = opts.fetch(:hostname) { ENV["DYNO"] || Socket.gethostname.force_encoding('utf-8').encode }
           @hostname = @hostname.gsub("'",'').gsub("’",'')
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
+          @failed_coverage_reports = []
           initialize_stats
         end
 
@@ -137,6 +138,7 @@ module Coverband
             save_coverage(full_package)
             ending = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @stats
             report_timing((ending - starting)) if @stats
+            retry_failed_reports
           end&.join
         end
 
@@ -146,18 +148,38 @@ module Coverband
 
         private
 
+        def retry_failed_reports
+          retries = []
+          @failed_coverage_reports.any? do
+            report_body = arr.pop
+            send_report_body(report_body)
+          rescue StandardError
+            retries << report_body
+          end
+          retries.each do |report_body|
+            @failed_coverage_reports << report_body unless @failed_coverage_reports.length > 5
+          end
+        end
+
         def save_coverage(data)
           if api_key.nil?
             puts "Coverband: Error: no Coverband API key was found!"
             return
           end
 
+          coverage_body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
+          send_report_body(coverage_body)
+        rescue StandardError => e
+          @failed_coverage_reports << coverage_body unless @failed_coverage_reports.length > 5
+          logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
+        end
+
+        def send_report_body(coverage_body)
           uri = URI("#{coverband_url}/api/collector")
           req = ::Net::HTTP::Post.new(uri,
                                     'Content-Type' => 'application/json',
                                     'Coverband-Token' => api_key)
-          req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
-
+          req.body = coverage_body
           logger&.info "Coverband: saving (#{uri}) #{req.body}" if Coverband.configuration.verbose
           res = ::Net::HTTP.start(
             uri.hostname,
@@ -169,8 +191,9 @@ module Coverband
             ) do |http|
             http.request(req)
           end
-        rescue StandardError => e
-          logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
+          if res.code.to_i >= 500
+            @failed_coverage_reports << coverage_body unless @failed_coverage_reports.length > 5
+          end
         end
       end
 
@@ -305,7 +328,7 @@ end
 ENV['COVERBAND_DISABLE_AUTO_START'] = COVERBAND_ORIGINAL_START
 Coverband.configure do |config|
   # Use the Service Adapter
-  if COVERBAND_PERSISTENT_HTTP && defined?(Net::HTTP::Persistent)
+  if Coverband::COVERBAND_PERSISTENT_HTTP && defined?(Net::HTTP::Persistent)
     config.store = Coverband::Adapters::PersistentService.new(Coverband::COVERBAND_SERVICE_URL)
   else
     config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
