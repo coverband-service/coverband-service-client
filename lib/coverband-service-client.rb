@@ -157,7 +157,15 @@ module Coverband
             retries << report_body
           end
           retries.each do |report_body|
-            @failed_coverage_reports << report_body unless @failed_coverage_reports.length > 5
+            add_retry_message(report_body)
+          end
+        end
+
+        def add_retry_message(report_body)
+          if @failed_coverage_reports.length > 5
+            logger&.info "Coverband: The errored reporting queue has reached 5. Subsequent reports will not be transmitted"
+          else
+            @failed_coverage_reports << report_body
           end
         end
 
@@ -170,7 +178,7 @@ module Coverband
           coverage_body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
           send_report_body(coverage_body)
         rescue StandardError => e
-          @failed_coverage_reports << coverage_body unless @failed_coverage_reports.length > 5
+          add_retry_message(coverage_body)
           logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
         end
 
@@ -192,7 +200,7 @@ module Coverband
             http.request(req)
           end
           if res.code.to_i >= 500
-            @failed_coverage_reports << coverage_body unless @failed_coverage_reports.length > 5
+            add_retry_message(coverage_body)
           end
         end
       end
