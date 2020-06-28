@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+require 'socket'
 
 COVERBAND_ORIGINAL_START = ENV['COVERBAND_DISABLE_AUTO_START']
 ENV['COVERBAND_DISABLE_AUTO_START'] = 'true'
@@ -9,11 +10,12 @@ require 'securerandom'
 module Coverband
   COVERBAND_ENV = ENV['RACK_ENV'] || ENV['RAILS_ENV'] || (defined?(Rails) ? Rails.env : 'unknown')
   COVERBAND_SERVICE_URL = ENV['COVERBAND_URL'] || 'https://coverband.io'
-  COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 1
+  COVERBAND_TIMEOUT = (COVERBAND_ENV == 'development') ? 5 : 2
   COVERBAND_ENABLE_DEV_MODE = ENV['COVERBAND_ENABLE_DEV_MODE'] || false
   COVERBAND_ENABLE_TEST_MODE = ENV['COVERBAND_ENABLE_TEST_MODE'] || false
   COVERBAND_PROCESS_TYPE = ENV['PROCESS_TYPE'] || 'unknown'
   COVERBAND_REPORT_PERIOD = (ENV['COVERBAND_REPORT_PERIOD'] || 600).to_i
+  COVERBAND_PERSISTENT_HTTP = ENV['COVERBAND_PERSISTENT_HTTP'] || false
 
   def self.service_disabled_dev_test_env?
     (COVERBAND_ENV == 'test' && !COVERBAND_ENABLE_TEST_MODE) ||
@@ -35,16 +37,39 @@ module Coverband
       #
       # NOTES:
       # * uses net/http to avoid any dependencies
-      # * currently JSON, but likely better to move to something simpler / faster
+      # * currently JSON, but likely better to move to something faster
       ###
       class Service < Base
-        attr_reader :coverband_url, :process_type, :runtime_env
+        attr_reader :coverband_url, :process_type, :runtime_env, :hostname, :pid, :stats
 
         def initialize(coverband_url, opts = {})
           super()
           @coverband_url = coverband_url
-          @process_type = opts.fetch(:process_type) { COVERBAND_PROCESS_TYPE }
+          @process_type = opts.fetch(:process_type) { $PROGRAM_NAME&.split('/')&.last || COVERBAND_PROCESS_TYPE }
+          @hostname = opts.fetch(:hostname) { ENV["DYNO"] || Socket.gethostname.force_encoding('utf-8').encode }
+          @hostname = @hostname.gsub("'",'').gsub("’",'')
           @runtime_env = opts.fetch(:runtime_env) { COVERBAND_ENV }
+          @failed_coverage_reports = []
+          initialize_stats
+        end
+
+        def initialize_stats
+          return unless ENV['COVERBAND_STATS_KEY']
+          return unless defined?(Dogapi::Client)
+
+          @stats = Dogapi::Client.new(ENV['COVERBAND_STATS_KEY'])
+          @app_name = defined?(Rails) ? Rails.application.class.module_parent.to_s : "unknown"
+        end
+
+        def report_timing(timing)
+          return unless @stats
+
+          @stats.emit_point(
+            'coverband.save.time',
+            timing,
+            host: hostname,
+            device: "coverband_#{self.class.name.split("::").last}",
+            options: {tags: [runtime_env]})
         end
 
         def logger
@@ -68,6 +93,9 @@ module Coverband
           ENV['COVERBAND_API_KEY'] || Coverband.configuration.api_key
         end
 
+        ###
+        # Fetch coverband coverage via the API
+        ###
         def coverage(local_type = nil, opts = {})
           local_type ||= opts.key?(:override_type) ? opts[:override_type] : type
           env_filter = opts.key?(:env_filter) ? opts[:env_filter] : 'production'
@@ -85,8 +113,11 @@ module Coverband
         def save_report(report)
           return if report.empty?
 
+          # We set here vs initialize to avoid setting on the primary process vs child processes
+          @pid ||= ::Process.pid
+
           # TODO: do we need dup
-          # TODO: remove timestamps, server will track first_seen
+          # TODO: remove upstream timestamps, server will track first_seen
           Thread.new do
             data = expand_report(report.dup)
             full_package = {
@@ -95,12 +126,19 @@ module Coverband
                 tags: {
                   process_type: process_type,
                   app_loading: type == Coverband::EAGER_TYPE,
-                  runtime_env: runtime_env
+                  runtime_env: runtime_env,
+                  pid: pid,
+                  hostname: hostname,
                 },
                 file_coverage: data
               }
             }
+
+            starting = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @stats
             save_coverage(full_package)
+            ending = Process.clock_gettime(Process::CLOCK_MONOTONIC) if @stats
+            report_timing((ending - starting)) if @stats
+            retry_failed_reports
           end&.join
         end
 
@@ -110,19 +148,48 @@ module Coverband
 
         private
 
+        def retry_failed_reports
+          retries = []
+          @failed_coverage_reports.any? do
+            report_body = arr.pop
+            send_report_body(report_body)
+          rescue StandardError
+            retries << report_body
+          end
+          retries.each do |report_body|
+            add_retry_message(report_body)
+          end
+        end
+
+        def add_retry_message(report_body)
+          if @failed_coverage_reports.length > 5
+            logger&.info "Coverband: The errored reporting queue has reached 5. Subsequent reports will not be transmitted"
+          else
+            @failed_coverage_reports << report_body
+          end
+        end
+
         def save_coverage(data)
           if api_key.nil?
             puts "Coverband: Error: no Coverband API key was found!"
+            return
           end
 
+          coverage_body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
+          send_report_body(coverage_body)
+        rescue StandardError => e
+          add_retry_message(coverage_body)
+          logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
+        end
+
+        def send_report_body(coverage_body)
           uri = URI("#{coverband_url}/api/collector")
-          req = Net::HTTP::Post.new(uri,
+          req = ::Net::HTTP::Post.new(uri,
                                     'Content-Type' => 'application/json',
                                     'Coverband-Token' => api_key)
-          req.body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
-
+          req.body = coverage_body
           logger&.info "Coverband: saving (#{uri}) #{req.body}" if Coverband.configuration.verbose
-          res = Net::HTTP.start(
+          res = ::Net::HTTP.start(
             uri.hostname,
             uri.port,
             open_timeout: COVERBAND_TIMEOUT,
@@ -131,6 +198,61 @@ module Coverband
             use_ssl: uri.scheme == 'https'
             ) do |http|
             http.request(req)
+          end
+          if res.code.to_i >= 500
+            add_retry_message(coverage_body)
+          end
+        end
+      end
+
+      class PersistentService < Service
+        attr_reader :http, :stats
+
+        def initialize(coverband_url, opts = {})
+          super
+          initiate_http
+        end
+
+        def recommended_timeout
+          puts Net::HTTP::Persistent.detect_idle_timeout URI("#{coverband_url}/api/collector")
+        end
+
+        private
+
+        def initiate_http
+          @http = Net::HTTP::Persistent.new name: 'coverband_persistent'
+          @http.headers['Content-Type'] = 'application/json'
+          @http.headers['Coverband-Token'] = api_key
+          @http.open_timeout = COVERBAND_TIMEOUT
+          @http.read_timeout = COVERBAND_TIMEOUT
+          # the two below seem inconsistent in terms of how they are set
+          # leaving off for now
+          # @http.ssl_timeout = COVERBAND_TIMEOUT
+          # @http.write_timeout = COVERBAND_TIMEOUT
+          # default is 5-10 seconds but we report ever few min, heroku kills them
+          # before our reporting period... ;(
+          # @http.idle_timeout = 1000
+        end
+
+        def save_coverage(data)
+          persistent_attempts = 0
+          begin
+            if api_key.nil?
+              puts "Coverband: Error: no Coverband API key was found!"
+              return
+            end
+
+            post_uri = URI("#{coverband_url}/api/collector")
+            post = Net::HTTP::Post.new post_uri.path
+            body = { remote_uuid: SecureRandom.uuid, data: data }.to_json
+            post.body = body
+            logger&.info "Coverband: saving (#{post_uri}) #{body}" if Coverband.configuration.verbose
+            res = http.request post_uri, post
+          rescue Net::HTTP::Persistent::Error => e
+            persistent_attempts += 1
+            http.shutdown
+            initiate_http
+            retry if persistent_attempts < 2
           end
         rescue StandardError => e
           logger&.info "Coverband: Error while saving coverage #{e}" if Coverband.configuration.verbose || COVERBAND_ENABLE_DEV_MODE
@@ -213,8 +335,12 @@ end
 
 ENV['COVERBAND_DISABLE_AUTO_START'] = COVERBAND_ORIGINAL_START
 Coverband.configure do |config|
-  # Use The Test Service Adapter
-  config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
+  # Use the Service Adapter
+  if Coverband::COVERBAND_PERSISTENT_HTTP && defined?(Net::HTTP::Persistent)
+    config.store = Coverband::Adapters::PersistentService.new(Coverband::COVERBAND_SERVICE_URL)
+  else
+    config.store = Coverband::Adapters::Service.new(Coverband::COVERBAND_SERVICE_URL)
+  end
 
   # default to tracking views true
   config.track_views = if ENV['COVERBAND_DISABLE_VIEW_TRACKER']
