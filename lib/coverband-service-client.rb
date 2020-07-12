@@ -151,7 +151,7 @@ module Coverband
         def retry_failed_reports
           retries = []
           @failed_coverage_reports.any? do
-            report_body = arr.pop
+            report_body = @failed_coverage_reports.pop
             send_report_body(report_body)
           rescue StandardError
             retries << report_body
