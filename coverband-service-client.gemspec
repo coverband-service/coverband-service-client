@@ -37,5 +37,5 @@ Gem::Specification.new do |spec|
   # spec.add_development_dependency "net-http-persistent"
 
   spec.add_development_dependency "minitest", "~> 5.0"
-  spec.add_runtime_dependency "coverband", "~> 4.2.4"
+  spec.add_runtime_dependency "coverband", "~> 5.0.0.rc.3"
 end

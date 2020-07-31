@@ -1,17 +1,17 @@
 PATH
   remote: .
   specs:
-    coverband-service-client (0.0.13)
-      coverband (~> 4.2.4)
+    coverband-service-client (0.0.14)
+      coverband (~> 5.0.0.rc.3)
 
 GEM
   remote: https://rubygems.org/
   specs:
-    coverband (4.2.5)
+    coverband (5.0.0.rc.3)
       redis
     minitest (5.14.0)
     rake (13.0.1)
-    redis (4.1.4)
+    redis (4.2.1)
 
 PLATFORMS
   ruby
